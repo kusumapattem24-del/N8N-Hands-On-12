@@ -1,0 +1,417 @@
+{
+  "name": "Topic 12 - Communication Alerts and Workflow Notifications",
+  "nodes": [
+    {
+      "id": "49411147-6f26-4de6-86dc-676a56e77ffc",
+      "name": "Manual_Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        160,
+        360
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "7574f068-9695-41c9-a38f-cf23529c93ad",
+      "name": "Code_SimulateIncidents",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        370,
+        360
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [\n{json:{incidentId:'INC-901',service:'payment-gateway',errorSignature:'AUTH_TIMEOUT_504',message:'Upstream bank gateway response latency exceeded 8000ms',impactedUsers:240,env:'production'}},\n{json:{incidentId:'INC-902',service:'payment-gateway',errorSignature:'AUTH_TIMEOUT_504',message:'Upstream bank gateway response latency exceeded 8200ms',impactedUsers:310,env:'production'}},\n{json:{incidentId:'INC-903',service:'search-indexer',errorSignature:'HEAP_MEMORY_WARN_85',message:'Elasticsearch node heap utilization exceeded 85%',impactedUsers:0,env:'staging'}},\n{json:{incidentId:'INC-904',service:'api-service',errorSignature:'CPU_OVERLOAD_90',message:'API CPU utilization exceeded 90%',impactedUsers:25,env:'production'}}\n];"
+      }
+    },
+    {
+      "id": "e64800b3-52fb-42a0-9371-89ec6f1f2fd9",
+      "name": "Code_EvaluateSeverityAndThrottle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        360
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.alertCache = staticData.alertCache || {};\nconst item = $input.item.json;\nconst now = Date.now();\nconst throttleWindowMs = 15 * 60 * 1000;\n// Expire old cache entries to avoid unlimited growth.\nfor (const [key, ts] of Object.entries(staticData.alertCache)) {\n  if (now - ts >= throttleWindowMs) delete staticData.alertCache[key];\n}\nlet severity = 'P3_MINOR';\nif (item.impactedUsers > 100 && item.env === 'production') severity = 'P1_CRITICAL';\nelse if (item.env === 'production' || item.impactedUsers > 0) severity = 'P2_MAJOR';\nconst throttleKey = `${item.service}:${item.errorSignature}`;\nconst lastAlertTime = staticData.alertCache[throttleKey] || 0;\nconst isThrottled = now - lastAlertTime < throttleWindowMs;\nif (!isThrottled) staticData.alertCache[throttleKey] = now;\nreturn {json:{...item,severity,isThrottled,shouldAlert:!isThrottled,throttleKey,evaluatedAt:new Date().toISOString()}};"
+      }
+    },
+    {
+      "id": "61a7bbf7-20db-4f01-a334-4181275e8d36",
+      "name": "IF_IsThrottled",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        830,
+        360
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "83d07ac0-702b-4324-a939-2c1d2acd59b9",
+              "leftValue": "={{ $json.shouldAlert }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "323cd3cb-8acf-412c-9a77-e1a6cd2b7b18",
+      "name": "Log_SuppressedAlert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        590
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {json:{event:'ALERT_SUPPRESSED_BY_THROTTLE_POLICY',incidentId:$json.incidentId,throttleKey:$json.throttleKey,suppressedAt:new Date().toISOString()}};"
+      }
+    },
+    {
+      "id": "69cf5d3c-ca1a-48ba-9154-3f49f47bff05",
+      "name": "Switch_RouteBySeverity",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1060,
+        260
+      ],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "43c86623-0763-4d85-9f08-0a6ef4752044",
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "P1_CRITICAL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "P1_CRITICAL"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "90a27e38-0267-47ba-b563-025b409167cf",
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "P2_MAJOR",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "P2_MAJOR"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "ba77dbc9-85ad-48f3-ab7d-ee958df10490",
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "P3_MINOR",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "P3_MINOR"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d4a4fa6f-88f0-4d8d-9238-df33eb3db872",
+      "name": "Code_BuildP1BlockKit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        80
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item.json;\nconst dispatchPayload = {\n channel:'#critical-incidents',\n text:`P1 CRITICAL INCIDENT: ${item.service} | ${item.incidentId} | ${item.evaluatedAt}`,\n blocks:[\n  {type:'header',text:{type:'plain_text',text:`P1 CRITICAL: ${item.service.toUpperCase()}`,emoji:true}},\n  {type:'section',fields:[\n   {type:'mrkdwn',text:`*Incident ID:*\\n\\`${item.incidentId}\\``},\n   {type:'mrkdwn',text:`*Environment:*\\n\\`${item.env.toUpperCase()}\\``},\n   {type:'mrkdwn',text:`*Impacted Users:*\\n*${item.impactedUsers}*`},\n   {type:'mrkdwn',text:`*Signature:*\\n\\`${item.errorSignature}\\``}\n  ]},\n  {type:'section',text:{type:'mrkdwn',text:`*Diagnostic Message:*\\n>${item.message}`}},\n  {type:'context',elements:[{type:'mrkdwn',text:`Evaluated: ${item.evaluatedAt}`}]}\n ]\n};\nreturn {json:{incidentId:item.incidentId,severity:item.severity,dispatchPayload}};"
+      }
+    },
+    {
+      "id": "7f8ac378-8464-412a-bb38-7032947db8d0",
+      "name": "Code_BuildP2SlackCard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        280
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item=$input.item.json;\nreturn {json:{incidentId:item.incidentId,severity:item.severity,dispatchPayload:{channel:'#dev-alerts',text:`P2 MAJOR | ${item.incidentId} | ${item.service} | ${item.message} | ${item.evaluatedAt}`,blocks:[{type:'section',text:{type:'mrkdwn',text:`*P2 MAJOR INCIDENT*\\n*ID:* ${item.incidentId}\\n*Service:* ${item.service}\\n*Message:* ${item.message}\\n*Time:* ${item.evaluatedAt}`}}]}}};"
+      }
+    },
+    {
+      "id": "beb3600d-cdbc-43b0-a9c5-a89ecf978d59",
+      "name": "Code_StageInDigestQueue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        480
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const data=$getWorkflowStaticData('global');\ndata.digestQueue=data.digestQueue || [];\nconst record={incidentId:$json.incidentId,service:$json.service,message:$json.message,severity:$json.severity,queuedAt:new Date().toISOString()};\ndata.digestQueue.push(record);\nreturn {json:{...record,channel:'digest_queue',digestStatus:'QUEUED',queueLength:data.digestQueue.length}};"
+      }
+    },
+    {
+      "id": "9e309a63-2462-4eb9-8fd3-1f5a606107ae",
+      "name": "HTTP_PostToMockSlack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1550,
+        190
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MOCK_SLACK_URL || \"https://example.invalid/replace-with-mock-slack-url\" }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.dispatchPayload) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "9b3f6cb7-98cb-4091-8566-e050b5fddd9f",
+      "name": "Code_AuditNotificationDelivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const resp=$input.item.json;\nconst statusCode=resp.statusCode ?? null;\nconst body=resp.body ?? resp;\nconst queued=resp.digestStatus==='QUEUED';\nconst delivered=!queued && statusCode>=200 && statusCode<300 && body?.ok!==false;\nreturn {json:{event:queued?'NOTIFICATION_QUEUED':'NOTIFICATION_DISPATCH_ATTEMPTED',channel:resp.channel || body?.channel || (queued?'digest_queue':'mock_slack'),deliveryStatus:queued?'QUEUED':(delivered?'DELIVERED':'FAILED'),httpStatus:statusCode,error:resp.error?.message || (delivered||queued?null:'Mock endpoint did not confirm delivery'),timestamp:new Date().toISOString()}};"
+      }
+    },
+    {
+      "id": "5b16cf3a-d0d1-4c51-8723-9cc84af36127",
+      "name": "Implementation Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        150,
+        -80
+      ],
+      "parameters": {
+        "content": "## Topic 12 \u2014 Communication, Alerts & Workflow Notifications\n**Implementation-plan workflow (mock notifications)**\n1. Set `MOCK_SLACK_URL` environment variable or replace HTTP_PostToMockSlack URL with your POST mock receiver.\n2. The mock receiver is separate; this flow does **not** send real Slack messages.\n3. 15-minute throttle window is from the step-by-step code (blueprint separately mentions 5 minutes).\n4. P3 incidents are queued, not emailed automatically.\n5. This plan does not include SLA Wait, Twilio, or human approval.\n6. Workflow static data may not persist during manual test executions; activate workflow and test via production trigger for persistence validation.",
+        "height": 300,
+        "width": 580
+      }
+    }
+  ],
+  "connections": {
+    "Manual_Trigger": {
+      "main": [
+        [
+          {
+            "node": "Code_SimulateIncidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_SimulateIncidents": {
+      "main": [
+        [
+          {
+            "node": "Code_EvaluateSeverityAndThrottle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_EvaluateSeverityAndThrottle": {
+      "main": [
+        [
+          {
+            "node": "IF_IsThrottled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_IsThrottled": {
+      "main": [
+        [
+          {
+            "node": "Switch_RouteBySeverity",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log_SuppressedAlert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log_SuppressedAlert": {
+      "main": [
+        [
+          {
+            "node": "Code_AuditNotificationDelivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_BuildP1BlockKit": {
+      "main": [
+        [
+          {
+            "node": "HTTP_PostToMockSlack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_BuildP2SlackCard": {
+      "main": [
+        [
+          {
+            "node": "HTTP_PostToMockSlack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP_PostToMockSlack": {
+      "main": [
+        [
+          {
+            "node": "Code_AuditNotificationDelivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_StageInDigestQueue": {
+      "main": [
+        [
+          {
+            "node": "Code_AuditNotificationDelivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch_RouteBySeverity": {
+      "main": [
+        [
+          {
+            "node": "Code_BuildP1BlockKit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code_BuildP2SlackCard",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code_StageInDigestQueue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "tags": []
+}
